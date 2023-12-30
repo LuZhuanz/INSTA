@@ -1,0 +1,49 @@
+
+way_num: 5
+shot_num: 5
+query_num: 15
+eval_query: 15
+eval_way: 5
+eval_shot: 5
+gamma: 0.5
+epoch: 200
+temperature: 64
+lr: 0.0002
+
+data_root: ./data/miniImagenet
+#pretrain_path: saves/initialization/miniimagenet/Res12-pre.pth
+
+
+classifier:
+  name: INSTA
+  kwargs:
+    gamma: 0.5
+    temperature: 64
+    
+
+backbone:
+  name: resnet12
+  kwargs:
+      maxpool_last2: False
+      is_flatten: False
+
+optimizer:
+  name: SGD
+  kwargs:
+    lr: 0.0002
+    momentum: 0.9
+    nestrov: True
+    weight_decay: 0.0005
+  other: ~
+    # emb_func: 0.001 # define lr OR
+    # another_part:    # define multi params
+    #   lr: 0.1
+    #   weight_decay: 0.5
+
+lr_scheduler:
+  name: cosine
+  kwargs:
+    T_max: 200
+    eta_min: 0.00001
+    
+    
