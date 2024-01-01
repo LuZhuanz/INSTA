@@ -5,43 +5,58 @@ import numpy as np
 import torch.nn.functional as F
 from .meta_model import MetaModel
 
+
 """
 way_num shot_num query_num eval_query eval_way eval_shot
 """
 
 class INSTA(MetaModel):
-    def __init__(self, **kwargs):
+    def __init__(
+            self, 
+            way_num,
+            shot_num,
+            query_num,
+            gamma,
+            **kwargs):
         super(INSTA,self).__init__(**kwargs)
         self.kwargs = kwargs
-        backbone_ = 'resnet12'
+        self.way_num = way_num
+        self.shot_num = shot_num
+        self.query_num = query_num
+        self.eval_query = query_num
+        self.eval_way = way_num
+        self.eval_shot = shot_num
+        self.temperature = 64
+        self.gamma = gamma
+        backbone = 'resnet12'
+        self.INSTA = INSTA_layer(640,5,0.2,3,kwargs = kwargs)
+        
 
-        if backbone_ == 'resnet12':
+        if backbone == 'resnet12':
             hdim = 640
-            from core.model.backbone.resnet_12 import ResNet
-            self.encoder = ResNet()
-        elif backbone_ == 'resnet18':
+            from core.model.backbone.resnet_12 import resnet12
+            self.encoder = resnet12()
+        elif backbone == 'resnet18':
             hdim = 512
-            from core.model.backbone.resnet_18 import ResNet
-            self.encoder = ResNet()
+            from core.model.backbone.resnet_18 import resnet18
+            self.encoder = resnet18()
         else:
             raise ValueError('Backbone not supported!')
         
 
     def split_instances(self, data):
-        kwargs = self.kwargs
         if self.training:
-            return (torch.Tensor(np.arange(kwargs.way_num*kwargs.shot_num)).long().view(1,kwargs.shot_num,kwargs.way_num),
-                    torch.Tensor(np.arange(kwargs.way_num*kwargs.shot_num,kwargs.way_num*(kwargs.shot_num+kwargs.query_num))).long().view(1,kwargs.eval_query,kwargs.way_num))
+            return (torch.Tensor(np.arange(self.way_num*self.shot_num)).long().view(1,self.shot_num,self.way_num),
+                    torch.Tensor(np.arange(self.way_num*self.shot_num,self.way_num*(self.shot_num+self.query_num))).long().view(1,self.eval_query,self.way_num))
         else:
-            return (torch.Tensor(np.arange(kwargs.eval_way*kwargs.eval_shot)).long().view(1,kwargs.eval_shot,kwargs.eval_way),
-                    torch.Tensor(np.arange(kwargs.eval_way*kwargs.eval_shot,kwargs.eval_way*(kwargs.eval_shot+kwargs.eval_query))).long().view(1,kwargs.eval_query,kwargs.eval_way))
+            return (torch.Tensor(np.arange(self.eval_way*self.eval_shot)).long().view(1,self.eval_shot,self.eval_way),
+                    torch.Tensor(np.arange(self.eval_way*self.eval_shot,self.eval_way*(self.eval_shot+self.eval_query))).long().view(1,self.eval_query,self.eval_way))
 
     def prepare_label(self):
-        args = self.args
 
         # prepare one-hot label
-        label = torch.arange(args.way, dtype=torch.int16).repeat(args.query)
-        label_aux = torch.arange(args.way, dtype=torch.int8).repeat(args.shot + args.query)
+        label = torch.arange(self.way_num, dtype=torch.int16).repeat(self.query_num)
+        label_aux = torch.arange(self.way_num, dtype=torch.int8).repeat(self.shot_num + self.query_num)
         
         label = label.type(torch.LongTensor)
         label_aux = label_aux.type(torch.LongTensor)
@@ -52,13 +67,37 @@ class INSTA(MetaModel):
             
         return label, label_aux    
     
-    def count_acc(logits, label):
-        pred = torch.argmax(logits, dim=1)
+    def count_acc(self, logits, label ,pred):
+        #pred = torch.argmax(logits, dim=1)
         if torch.cuda.is_available():
             return (pred == label).type(torch.cuda.FloatTensor).mean().item()
         else:
             return (pred == label).type(torch.FloatTensor).mean().item()
+        
+    def inner_loop(self, proto, support):
+        SFC = proto.clone().detach()
+        SFC = nn.Parameter(SFC.detach(),requires_grad=True)
+        optimizer = torch.optim.SGD([SFC], lr=0.6,momentum=0.9,dampening=0.9,weight_decay=0)
+        label_shot = torch.arange(self.way_num).repeat(self.shot_num)
+        label_shot = label_shot.type(torch.cuda.LongTensor)
+        with torch.enable_grad():
+            for k in range(0,50):
+                rand_id = torch.randperm(self.way_num*self.shot_num).cuda()
+                for j in range(0,self.way_num*self.shot_num,4):
+                    selected_id = rand_id[j:min(j+4,self.way_num*self.shot_num)]
+                    batch_shot = support[selected_id,:]
+                    batch_label = label_shot[selected_id]
+                    optimizer.zero_grad()
+                    logits = self.classifier(batch_shot.detach(),SFC)
+                    if logits.dim()==1: logits = logits.unsqueeze(0)
+                    loss = F.cross_entropy(logits,batch_label)
+                    loss.backward()
+                    optimizer.step()
+        return SFC
 
+    def classifier(self, query, proto):
+        logits = - torch.sum((proto.unsqueeze(0) - query.unsqueeze(1))**2,2)/self.temperature
+        return logits.squeeze()
         """
     def forward(self, x,get_feature=False):
         if get_feature:
@@ -69,44 +108,88 @@ class INSTA(MetaModel):
 
             support_idx,query_idx = self.split_instances(x)
             if self.training:
-                logits,logits_reg = self._forwad(instance_embs,support_idx,query_idx)
+                logits,logits_reg = self._forward(instance_embs,support_idx,query_idx)
                 return logits,logits_reg
             else:
-                logits = self._forwad(instance_embs,support_idx,query_idx)
+                logits = self._forward(instance_embs,support_idx,query_idx)
                 return logits
         """    
-    def _forward(self, x, support_idx, query_idx):
-        raise NotImplementedError('Suppose to be implemented by subclass')
+    
     
     def set_forward(self, x,get_feature=False):
         if get_feature:
             return self.encoder(x)
         else:
+            x = x[0]
+            x= x.to(self.device)
             x = x.squeeze(0)
+
+            #print(x.shape)
+            
             instance_embs = self.encoder(x)
 
             support_idx,query_idx = self.split_instances(x)
-            logits = self._forwad(instance_embs,support_idx,query_idx)
-            label = self.prepare_label()
-            acc = self.count_acc(logits,label)
-            return logits,acc
+            logits = self._forward(instance_embs,support_idx,query_idx,if_test=False)
+            pred = torch.argmax(logits, dim=1)
+            label,label_aux = self.prepare_label()
+            acc = self.count_acc(logits,label ,pred)
+            return logits ,acc
     
     def set_forward_loss(self, x,get_feature=False):
         if get_feature:
             return self.encoder(x)
         else:
+            x = x[0].to(self.device)
             x = x.squeeze(0)
             instance_embs = self.encoder(x)
 
             support_idx,query_idx = self.split_instances(x)
-            logits,logits_reg = self._forwad(instance_embs,support_idx,query_idx)
+            logits,logits_reg = self._forward(instance_embs,support_idx,query_idx,if_test=True)
             #return logits,logits_reg
-            label = self.prepare_label()
+            pred = torch.argmax(logits, dim=1)
+            label,label_aux = self.prepare_label()
             loss = F.cross_entropy(logits, label)
-            acc = self.count_acc(logits,label)
-            return logits,acc,loss
+            acc = self.count_acc(logits,label, pred)
+            return logits ,acc,loss
+        
+    def _forward(self, instance_embs, support_idx, query_idx ,if_test):
+        #print(instance_embs.shape)
+        #instance_embs = instance_embs.reshape(100,640,5,5) 
+        emb_dim = instance_embs.size()[-3:] #640,5,5
+        channel_dim = emb_dim[0] #640
+                                    #1,5,5
+        support = instance_embs[support_idx.flatten()].view(*(support_idx.shape + emb_dim))
+        query   = instance_embs[query_idx.flatten()].view(*(query_idx.shape + emb_dim))
+        num_samples = support.shape[1] #5
+        num_proto = support.shape[2] #5
+        support = support.squeeze() 
+
+        adapted_s, task_kernel = self.INSTA(support.view(-1,*emb_dim))
+        query = query.view(-1,*emb_dim)
+        adapted_proto = adapted_s.view(num_samples, -1, *adapted_s.shape[1:]).mean(0)
+        adapted_proto = nn.AdaptiveAvgPool2d(1)(adapted_proto).squeeze(-1).squeeze(-1)
+
+        query_ = nn.AdaptiveAvgPool2d(1)((self.INSTA.unfold(query, int((task_kernel.shape[-1]+1)/2-1),task_kernel.shape[-1]) * task_kernel)).squeeze()
+        query = query_ + query
+        adapted_q = nn.AdaptiveAvgPool2d(1)(query).squeeze(-1).squeeze(-1)
+        #if self.kwargs.testing:
+        if if_test:
+            adapted_proto = self.inner_loop(adapted_proto, nn.AdaptiveAvgPool2d(1)(support).squeeze().view(num_proto*num_samples,channel_dim))
+        logits = self.classifier(adapted_q, adapted_proto)
+
+        if self.training:
+            reg_logits = None
+            return logits,reg_logits
+        else:
+            return logits
+        #raise NotImplementedError('Suppose to be implemented by subclass')
     
     
+
+
+####################################################################################################################################
+        #net modules below
+
 
 def get_freq_indices(method):
     assert method in ['top1', 'top2', 'top4', 'top8', 'top16', 'top32',
@@ -240,8 +323,8 @@ class INSTA_layer(nn.Module):
         self.h2 = k **2
         self.k = k
         self.conv = nn.Conv2d(self.channel, self.h2, 1)
-        self.fn_spatial = nn.BatchNorm1d(spatial_size**2)
-        self.fn_channel = nn.BatchNorm1d(self.channel)
+        self.fn_spatial = nn.BatchNorm2d(spatial_size**2)
+        self.fn_channel = nn.BatchNorm2d(self.channel)
         self.unfold = nn.Unfold(kernel_size=self.k,padding=(self.k+1)/2-1)
         self.spatial_size = spatial_size
         c2wh = dict([(512,11),(640,self.spatial_size)])
@@ -274,10 +357,14 @@ class INSTA_layer(nn.Module):
     
     def spatial_kernel_network(self, feature_map, conv):
         spatial_kernel = conv(feature_map)
+        #print("spatial_kernel_1",spatial_kernel.shape) #25 9 5 5
         spatial_kernel = spatial_kernel.flatten(-2).transpose(-1,-2)
+        #print("spatial_kernel_2",spatial_kernel.shape) #25 25 9
         size = spatial_kernel.size()
         spatial_kernel = spatial_kernel.view(size[0],-1,self.k,self.k)
+        #print("spatial_kernel_3",spatial_kernel.shape) #25 25 3 3
         spatial_kernel = self.fn_spatial(spatial_kernel)
+        #print("spatial_kernel_4",spatial_kernel.shape)
 
         spatial_kernel = spatial_kernel.flatten(-2)
         return spatial_kernel
@@ -300,6 +387,8 @@ class INSTA_layer(nn.Module):
     
     def forward(self, x):
         spatial_kernel = self.spatial_kernel_network(x,self.conv).unsqueeze(-3)
+        
+        #print("spatial_kernel",spatial_kernel.shape)
 
         channel_kernel = self.channel_kernel_network(x).unsqueeze(-2)
         kernel = spatial_kernel * channel_kernel
@@ -323,7 +412,7 @@ class INSTA_ProtoNet(INSTA):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.kwargs = kwargs
-        self.INSTA = INSTA_layer(640,5,0.2,3,args = kwargs)
+        self.INSTA = INSTA_layer(640,5,0.2,3,kwargs = kwargs)
 
     def inner_loop(self, proto, support):
         SFC = proto.clone().detach()

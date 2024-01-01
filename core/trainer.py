@@ -395,6 +395,8 @@ class Trainer(object):
         val_loader = get_dataloader(config, "val", self.model_type, distribute)
         test_loader = get_dataloader(config, "test", self.model_type, distribute)
 
+        #print(train_loader)
+
         return train_loader, val_loader, test_loader
 
     def _init_model(self, config):

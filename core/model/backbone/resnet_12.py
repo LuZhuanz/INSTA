@@ -181,7 +181,7 @@ class ResNet(nn.Module):
         avg_pool=True,
         drop_rate=0.1,
         dropblock_size=5,
-        is_flatten=True,
+        is_flatten=False,
         maxpool_last2=True,
     ):
         self.inplanes = 3
@@ -273,15 +273,17 @@ class ResNet(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
+        """
         if self.keep_avg_pool:
             x = self.avgpool(x)
         if self.is_flatten:
             x = x.view(x.size(0), -1)
+        """
         return x
 
 
 def resnet12(
-    keep_prob=1.0, avg_pool=True, is_flatten=True, maxpool_last2=True, **kwargs
+    keep_prob=1.0, avg_pool=False, is_flatten=False, maxpool_last2=True, **kwargs
 ):
     """Constructs a ResNet-12 model."""
     model = ResNet(
@@ -296,7 +298,7 @@ def resnet12(
 
 
 def resnet12woLSC(
-    keep_prob=1.0, avg_pool=True, is_flatten=True, maxpool_last2=True, **kwargs
+    keep_prob=1.0, avg_pool=True, is_flatten=True, maxpool_last2=False, **kwargs
 ):
     """Constructs a ResNet-12 model."""
     model = ResNet(
@@ -313,6 +315,6 @@ def resnet12woLSC(
 
 if __name__ == "__main__":
     model = resnet12(avg_pool=True).cuda()
-    data = torch.rand(10, 3, 84, 84).cuda()
+    data = torch.rand(100, 3, 84, 84).cuda()
     output = model(data)
     print(output.size())
