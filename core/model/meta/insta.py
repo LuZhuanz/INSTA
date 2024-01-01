@@ -35,8 +35,31 @@ class INSTA(MetaModel):
         else:
             return (torch.Tensor(np.arange(kwargs.eval_way*kwargs.eval_shot)).long().view(1,kwargs.eval_shot,kwargs.eval_way),
                     torch.Tensor(np.arange(kwargs.eval_way*kwargs.eval_shot,kwargs.eval_way*(kwargs.eval_shot+kwargs.eval_query))).long().view(1,kwargs.eval_query,kwargs.eval_way))
-        
 
+    def prepare_label(self):
+        args = self.args
+
+        # prepare one-hot label
+        label = torch.arange(args.way, dtype=torch.int16).repeat(args.query)
+        label_aux = torch.arange(args.way, dtype=torch.int8).repeat(args.shot + args.query)
+        
+        label = label.type(torch.LongTensor)
+        label_aux = label_aux.type(torch.LongTensor)
+        
+        if torch.cuda.is_available():
+            label = label.cuda()
+            label_aux = label_aux.cuda()
+            
+        return label, label_aux    
+    
+    def count_acc(logits, label):
+        pred = torch.argmax(logits, dim=1)
+        if torch.cuda.is_available():
+            return (pred == label).type(torch.cuda.FloatTensor).mean().item()
+        else:
+            return (pred == label).type(torch.FloatTensor).mean().item()
+
+        """
     def forward(self, x,get_feature=False):
         if get_feature:
             return self.encoder(x)
@@ -51,9 +74,38 @@ class INSTA(MetaModel):
             else:
                 logits = self._forwad(instance_embs,support_idx,query_idx)
                 return logits
-        
+        """    
     def _forward(self, x, support_idx, query_idx):
         raise NotImplementedError('Suppose to be implemented by subclass')
+    
+    def set_forward(self, x,get_feature=False):
+        if get_feature:
+            return self.encoder(x)
+        else:
+            x = x.squeeze(0)
+            instance_embs = self.encoder(x)
+
+            support_idx,query_idx = self.split_instances(x)
+            logits = self._forwad(instance_embs,support_idx,query_idx)
+            label = self.prepare_label()
+            acc = self.count_acc(logits,label)
+            return logits,acc
+    
+    def set_forward_loss(self, x,get_feature=False):
+        if get_feature:
+            return self.encoder(x)
+        else:
+            x = x.squeeze(0)
+            instance_embs = self.encoder(x)
+
+            support_idx,query_idx = self.split_instances(x)
+            logits,logits_reg = self._forwad(instance_embs,support_idx,query_idx)
+            #return logits,logits_reg
+            label = self.prepare_label()
+            loss = F.cross_entropy(logits, label)
+            acc = self.count_acc(logits,label)
+            return logits,acc,loss
+    
     
 
 def get_freq_indices(method):

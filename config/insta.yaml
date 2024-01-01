@@ -28,20 +28,17 @@ backbone:
       is_flatten: False
 
 optimizer:
-  name: SGD
   kwargs:
-    lr: 0.0002
+    lr: 0.0001
     momentum: 0.9
-    nestrov: True
+    nesterov: true
     weight_decay: 0.0005
-  other: ~
-    # emb_func: 0.001 # define lr OR
-    # another_part:    # define multi params
-    #   lr: 0.1
-    #   weight_decay: 0.5
+  name: SGD
+  other: null
+
 
 lr_scheduler:
-  name: cosine
+  name: CosineAnnealingLR
   kwargs:
     T_max: 200
     eta_min: 0.00001
