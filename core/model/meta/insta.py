@@ -4,6 +4,8 @@ from torch import nn
 import numpy as np
 import torch.nn.functional as F
 from .meta_model import MetaModel
+#from core.model.backbone.utils import get_backbone
+
 
 
 """
@@ -26,12 +28,12 @@ class INSTA(MetaModel):
         self.eval_query = query_num
         self.eval_way = way_num
         self.eval_shot = shot_num
-        self.temperature = 64
+        self.temperature = 32
         self.gamma = gamma
         backbone = 'resnet12'
         self.INSTA = INSTA_layer(640,5,0.2,3,kwargs = kwargs)
-        
-
+        #self.encoder = get_backbone(backbone)
+        """
         if backbone == 'resnet12':
             hdim = 640
             from core.model.backbone.resnet_12 import resnet12
@@ -42,7 +44,7 @@ class INSTA(MetaModel):
             self.encoder = resnet18()
         else:
             raise ValueError('Backbone not supported!')
-        
+        """
 
     def split_instances(self, data):
         if self.training:
@@ -60,6 +62,7 @@ class INSTA(MetaModel):
         
         label = label.type(torch.LongTensor)
         label_aux = label_aux.type(torch.LongTensor)
+        #print("label",label)
         
         if torch.cuda.is_available():
             label = label.cuda()
@@ -67,7 +70,7 @@ class INSTA(MetaModel):
             
         return label, label_aux    
     
-    def count_acc(self, logits, label ,pred):
+    def count_acc(self, label ,pred):
         #pred = torch.argmax(logits, dim=1)
         if torch.cuda.is_available():
             return (pred == label).type(torch.cuda.FloatTensor).mean().item()
@@ -116,40 +119,37 @@ class INSTA(MetaModel):
         """    
     
     
-    def set_forward(self, x,get_feature=False):
-        if get_feature:
-            return self.encoder(x)
-        else:
-            x = x[0]
-            x= x.to(self.device)
-            x = x.squeeze(0)
+    def set_forward(self, batch):
+        
 
-            #print(x.shape)
-            
-            instance_embs = self.encoder(x)
-
+            x, global_target = batch
+            x = x.to(self.device)
+            #instance_embs = self.encoder(x) #100,640,5,5
+            instance_embs = self.emb_func(x)
+            #support_idx,query_idx,support_target,query_target = self.split_by_episode(x,mode=3)
             support_idx,query_idx = self.split_instances(x)
             logits = self._forward(instance_embs,support_idx,query_idx,if_test=False)
             pred = torch.argmax(logits, dim=1)
+
             label,label_aux = self.prepare_label()
-            acc = self.count_acc(logits,label ,pred)
-            return logits ,acc
+            acc = self.count_acc(label ,pred)
+            return pred ,acc
     
-    def set_forward_loss(self, x,get_feature=False):
-        if get_feature:
-            return self.encoder(x)
-        else:
-            x = x[0].to(self.device)
-            x = x.squeeze(0)
-            instance_embs = self.encoder(x)
+    def set_forward_loss(self, batch ,get_feature=False):
+            
+            x, global_target = batch
+            x = x.to(self.device)
+            instance_embs = self.emb_func(x)
 
             support_idx,query_idx = self.split_instances(x)
             logits,logits_reg = self._forward(instance_embs,support_idx,query_idx,if_test=True)
+            #print(logits)
             #return logits,logits_reg
             pred = torch.argmax(logits, dim=1)
+            #print(pred)
             label,label_aux = self.prepare_label()
             loss = F.cross_entropy(logits, label)
-            acc = self.count_acc(logits,label, pred)
+            acc = self.count_acc(label, pred)
             return logits ,acc,loss
         
     def _forward(self, instance_embs, support_idx, query_idx ,if_test):
