@@ -150,7 +150,7 @@ class INSTA(MetaModel):
             label,label_aux = self.prepare_label()
             loss = F.cross_entropy(logits, label)
             acc = self.count_acc(label, pred)
-            return logits ,acc,loss
+            return pred ,acc,loss
         
     def _forward(self, instance_embs, support_idx, query_idx ,if_test):
         #print(instance_embs.shape)
